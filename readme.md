@@ -1,0 +1,1 @@
+Script to deploy the rrs_r application to a raspberry pi.

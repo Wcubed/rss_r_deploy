@@ -1,0 +1,18 @@
+[package]
+name = "deploy"
+version = "0.1.0"
+edition = "2021"
+authors = ["Wybe Westra"]
+description = """Script to deploy the rss_r application to a raspberry pi over ssh.
+Will do nothing on first run, but create a config.toml in the working directory."""
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+clap = { version = "4.0.15", features = ["derive"] }
+log = "0.4.17"
+simplelog = "0.12.0"
+# Needed for simplelog's time settings.
+time = "0.3.1"
+serde = "1.0"
+ron = "0.8"
