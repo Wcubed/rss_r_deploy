@@ -19,6 +19,8 @@ pub struct Config {
     pub username: String,
     pub private_key_file: PathBuf,
 
+    /// Local zip file that contains the built `rss_r` executable and `resources` direcory.
+    pub rss_r_zip: PathBuf,
     /// Directory on the target that the rss_r script will be deployed to in test mode.
     /// This directory will be emptied upon test deployment.
     pub rss_r_target_test_dir: PathBuf,
@@ -31,6 +33,7 @@ impl Default for Config {
             target_ip: 22,
             username: String::new(),
             private_key_file: PathBuf::new(),
+            rss_r_zip: PathBuf::new(),
             rss_r_target_test_dir: PathBuf::new(),
         }
     }

@@ -6,9 +6,13 @@ use clap::Parser;
 use log::{error, info, LevelFilter};
 use simplelog::{format_description, ColorChoice, ConfigBuilder, TermLogger, TerminalMode};
 use ssh2::Session;
-use std::io::Read;
+use std::fs::File;
+use std::io::{Read, Write};
 use std::net::TcpStream;
+use std::path::{Path, PathBuf};
 use std::process::exit;
+
+const REMOTE_TEMP_DIR: &str = "/tmp";
 
 #[derive(Parser, Debug)]
 #[command(author, version, about)]
@@ -40,7 +44,7 @@ fn main() {
         exit(1);
     }
 
-    let result = deploy(&config);
+    let result = deploy_to_test_dir_and_run(&config);
     if let Err(error) = result {
         error!("{:#}", error);
         exit(1);
@@ -63,6 +67,13 @@ fn verify_config(config: &Config) -> bool {
         );
         return false;
     }
+    if !config.rss_r_zip.exists() {
+        error!(
+            "rss_r package zip does not exist: `{}`",
+            config.rss_r_zip.display()
+        );
+        return false;
+    }
     if config.rss_r_target_test_dir.to_string_lossy().is_empty() {
         error!("Please configure a target directory for testing.");
         return false;
@@ -71,10 +82,23 @@ fn verify_config(config: &Config) -> bool {
     true
 }
 
-fn deploy(config: &Config) -> anyhow::Result<()> {
+fn deploy_to_test_dir_and_run(config: &Config) -> anyhow::Result<()> {
     let session = connect_and_login(config)?;
 
-    println!("{}", execute_command(&session, "ls")?);
+    info!("Uploading rss_r to the test directory.");
+    let package_name = config
+        .rss_r_zip
+        .file_name()
+        .context("Cannot upload file, path does not have file name.")?;
+    let mut remote_temp_path = PathBuf::from(REMOTE_TEMP_DIR);
+    remote_temp_path.push(package_name);
+
+    upload_file(&session, &config.rss_r_zip, &remote_temp_path)?;
+
+    execute_command(
+        &session,
+        &format!("rm -rf '{}'", config.rss_r_target_test_dir.display()),
+    )?;
 
     Ok(())
 }
@@ -131,6 +155,28 @@ fn execute_command(session: &Session, command: &str) -> anyhow::Result<String> {
             stderr_response
         )
     }
+}
+
+fn upload_file(session: &Session, file: &Path, remote_path: &Path) -> anyhow::Result<()> {
+    let mut local_file = File::open(file)?;
+    let mut bytes = Vec::new();
+    local_file.read_to_end(&mut bytes)?;
+
+    info!(
+        "Uploading `{}` to `{}`",
+        file.display(),
+        remote_path.display()
+    );
+
+    let mut remote_file = session.scp_send(&remote_path, 0o644, bytes.len() as u64, None)?;
+
+    remote_file.write_all(&bytes)?;
+    remote_file.send_eof()?;
+    remote_file.wait_eof()?;
+    remote_file.close()?;
+    remote_file.wait_close()?;
+
+    Ok(())
 }
 
 fn configure_logging() {
