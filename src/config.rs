@@ -18,6 +18,10 @@ pub struct Config {
     /// Username to log in as on the target.
     pub username: String,
     pub private_key_file: PathBuf,
+
+    /// Directory on the target that the rss_r script will be deployed to in test mode.
+    /// This directory will be emptied upon test deployment.
+    pub rss_r_target_test_dir: PathBuf,
 }
 
 impl Default for Config {
@@ -27,6 +31,7 @@ impl Default for Config {
             target_ip: 22,
             username: String::new(),
             private_key_file: PathBuf::new(),
+            rss_r_target_test_dir: PathBuf::new(),
         }
     }
 }
