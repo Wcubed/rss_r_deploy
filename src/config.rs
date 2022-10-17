@@ -24,6 +24,9 @@ pub struct Config {
     /// Directory on the target that the rss_r script will be deployed to in test mode.
     /// This directory will be emptied upon test deployment.
     pub rss_r_target_test_dir: PathBuf,
+
+    /// File that will become the `app_config.ron` file when rss_r is being tested on target.
+    pub rss_r_test_config_file: PathBuf,
 }
 
 impl Default for Config {
@@ -35,6 +38,7 @@ impl Default for Config {
             private_key_file: PathBuf::new(),
             rss_r_zip: PathBuf::new(),
             rss_r_target_test_dir: PathBuf::new(),
+            rss_r_test_config_file: PathBuf::new(),
         }
     }
 }

@@ -78,6 +78,13 @@ fn verify_config(config: &Config) -> bool {
         error!("Please configure a target directory for testing.");
         return false;
     }
+    if !config.rss_r_test_config_file.exists() {
+        error!(
+            "test config file does not exist: `{}`",
+            config.rss_r_test_config_file.display()
+        );
+        return false;
+    }
 
     true
 }
@@ -95,9 +102,57 @@ fn deploy_to_test_dir_and_run(config: &Config) -> anyhow::Result<()> {
 
     upload_file(&session, &config.rss_r_zip, &remote_temp_path)?;
 
+    info!(
+        "Unpacking package to `{}`",
+        config.rss_r_target_test_dir.display()
+    );
     execute_command(
         &session,
         &format!("rm -rf '{}'", config.rss_r_target_test_dir.display()),
+    )?;
+    execute_command(
+        &session,
+        &format!(
+            "unzip '{}' -d '{}'",
+            remote_temp_path.display(),
+            config.rss_r_target_test_dir.display()
+        ),
+    )?;
+
+    info!("Transferring app config file.");
+    let mut config_file_target = PathBuf::from(&config.rss_r_target_test_dir);
+    config_file_target.push("rss_r");
+    config_file_target.push("persistence");
+
+    execute_command(
+        &session,
+        &format!("mkdir -p '{}'", config_file_target.display()),
+    )?;
+
+    config_file_target.push("app_config.ron");
+
+    upload_file(
+        &session,
+        &config.rss_r_test_config_file,
+        &config_file_target,
+    )?;
+
+    let mut exec_path = PathBuf::from(&config.rss_r_target_test_dir);
+    // Top directory in the .zip should be rss_r.
+    exec_path.push("rss_r");
+    // Executable is also called rss_r.
+    exec_path.push("rss_r");
+
+    let mut working_dir = PathBuf::from(&config.rss_r_target_test_dir);
+    working_dir.push("rss_r");
+
+    info!("Running `{}`", exec_path.display());
+
+    // Make sure to have the working directory be the same as the rss_r directory,
+    // so that the program can locate the persistence and config files properly.
+    execute_command(
+        &session,
+        &format!("cd '{}'; '{}'", working_dir.display(), exec_path.display()),
     )?;
 
     Ok(())

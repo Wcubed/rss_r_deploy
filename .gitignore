@@ -1,5 +1,7 @@
 # Configuration for running the script.
 deploy_config.ron
+# Configuration for running rss_r in test configuration on the target.
+test_app_config.ron
 
 .idea/
 
