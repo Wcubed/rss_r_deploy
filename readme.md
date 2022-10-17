@@ -1,1 +1,1 @@
-Script to deploy the rrs_r application to a raspberry pi.
+Script to deploy the [rss_r](https://github.com/Wcubed/rss_r) application to a raspberry pi.

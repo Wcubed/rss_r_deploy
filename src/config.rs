@@ -1,4 +1,4 @@
-use log::{error, warn};
+use log::info;
 use ron::ser::{to_string_pretty, PrettyConfig};
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -8,9 +8,28 @@ pub const CONFIG_FILE: &str = "deploy_config.ron";
 
 /// Using serde(default) means we can add new values, and load old config files, without it being
 /// a breaking change.
-#[derive(Default, Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 #[serde(default)]
-pub struct Config {}
+pub struct Config {
+    /// This is the host the rss_r program will be deployed to.
+    /// Either hostname, or ip.
+    pub target_host: String,
+    pub target_ip: u32,
+    /// Username to log in as on the target.
+    pub username: String,
+    pub private_key_file: PathBuf,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Config {
+            target_host: String::new(),
+            target_ip: 22,
+            username: String::new(),
+            private_key_file: PathBuf::new(),
+        }
+    }
+}
 
 impl Config {
     pub fn save(&self) {
@@ -22,6 +41,8 @@ impl Config {
     }
 
     pub fn load() -> Option<Self> {
+        info!("Loading configuration from `{}`", CONFIG_FILE);
+
         let path = PathBuf::from(CONFIG_FILE);
 
         if let Ok(contents) = fs::read_to_string(path) {
@@ -30,5 +51,9 @@ impl Config {
         } else {
             None
         }
+    }
+
+    pub fn host_and_port(&self) -> String {
+        format!("{}:{}", self.target_host, self.target_ip)
     }
 }
