@@ -4,13 +4,16 @@ use crate::config::{Config, CONFIG_FILE};
 use anyhow::{bail, Context};
 use clap::Parser;
 use log::{error, info, LevelFilter};
+use signal_hook::consts::SIGINT;
+use signal_hook::iterator::Signals;
 use simplelog::{format_description, ColorChoice, ConfigBuilder, TermLogger, TerminalMode};
-use ssh2::Session;
+use ssh2::{ExtendedData, Session};
 use std::fs::File;
-use std::io::{Read, Write};
+use std::io::{stderr, stdout, Read, Write};
 use std::net::TcpStream;
 use std::path::{Path, PathBuf};
 use std::process::exit;
+use std::thread;
 
 const REMOTE_TEMP_DIR: &str = "/tmp";
 
@@ -147,6 +150,7 @@ fn deploy_to_test_dir_and_run(config: &Config) -> anyhow::Result<()> {
     working_dir.push("rss_r");
 
     info!("Running `{}`", exec_path.display());
+    println!("----------");
 
     // Make sure to have the working directory be the same as the rss_r directory,
     // so that the program can locate the persistence and config files properly.
@@ -187,27 +191,49 @@ fn connect_and_login(config: &Config) -> anyhow::Result<Session> {
 }
 
 /// Executes a given command.
-/// Returns an error, and the stderr output, if the command had a non-zero exit code.
-fn execute_command(session: &Session, command: &str) -> anyhow::Result<String> {
+/// Prints the stdout and stderr output as it arrives.
+/// Returns an error if the command had a non-zero exit code.
+fn execute_command(session: &Session, command: &str) -> anyhow::Result<()> {
+    // We'll listen to Ctrl+c (SIGINT) while running a command.
+    // So that we can gracefully shut it down.
+    let mut signals = Signals::new(&[SIGINT])?;
+
     let mut channel = session.channel_session()?;
+    // Will merge stdout and stderr data into stdout.
+    channel.handle_extended_data(ExtendedData::Merge)?;
+
     channel.exec(command)?;
 
-    let mut response = String::new();
-    channel.read_to_string(&mut response)?;
+    while !channel.eof() {
+        let mut bytes = [0; 32];
 
-    let mut stderr_response = String::new();
-    channel.stderr().read_to_string(&mut stderr_response)?;
+        let amount = channel.read(&mut bytes)?;
+        stdout().write_all(&bytes[0..amount])?;
+
+        stdout().flush()?;
+
+        if signals.pending().next().is_some() {
+            // Received interrupt signal.
+            info!("Stopping remote command...");
+
+            // Ask the remote to stop the command.
+            // TODO (Wybe 2022-10-17): This does not work yet. How do we stop an ongoing command in this case?
+            channel.send_eof()?;
+            channel.close()?;
+            break;
+        }
+    }
 
     channel.wait_close()?;
     let exit_code = channel.exit_status()?;
 
     if exit_code == 0 {
-        Ok(response)
+        Ok(())
     } else {
         bail!(
-            "command `{}` failed:\n```\n{}\n```",
+            "command `{}` failed with exit code `{}`",
             command,
-            stderr_response
+            exit_code
         )
     }
 }
