@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 authors = ["Wybe Westra"]
 description = """Script to deploy the rss_r application to a raspberry pi over ssh.
-Will do nothing on first run, but create a config.toml in the working directory."""
+Will do nothing on first run, but create a deploy_config.ron in the working directory."""
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
