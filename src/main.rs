@@ -9,11 +9,10 @@ use signal_hook::iterator::Signals;
 use simplelog::{format_description, ColorChoice, ConfigBuilder, TermLogger, TerminalMode};
 use ssh2::{ExtendedData, Session};
 use std::fs::File;
-use std::io::{stderr, stdout, Read, Write};
+use std::io::{stdout, Read, Write};
 use std::net::TcpStream;
 use std::path::{Path, PathBuf};
 use std::process::exit;
-use std::thread;
 
 const REMOTE_TEMP_DIR: &str = "/tmp";
 
@@ -61,13 +60,6 @@ fn verify_config(config: &Config) -> bool {
     }
     if config.username.is_empty() {
         error!("Please configure a username.");
-        return false;
-    }
-    if !config.private_key_file.exists() {
-        error!(
-            "Private key file does not exist: `{}`",
-            config.private_key_file.display()
-        );
         return false;
     }
     if !config.rss_r_zip.exists() {
@@ -140,6 +132,12 @@ fn deploy_to_test_dir_and_run(config: &Config) -> anyhow::Result<()> {
         &config_file_target,
     )?;
 
+    info!("Upload complete.");
+
+    Ok(())
+}
+
+fn run_test_rss_r(config: &Config, session: &Session) -> anyhow::Result<()> {
     let mut exec_path = PathBuf::from(&config.rss_r_target_test_dir);
     // Top directory in the .zip should be rss_r.
     exec_path.push("rss_r");
@@ -155,11 +153,9 @@ fn deploy_to_test_dir_and_run(config: &Config) -> anyhow::Result<()> {
     // Make sure to have the working directory be the same as the rss_r directory,
     // so that the program can locate the persistence and config files properly.
     execute_command(
-        &session,
+        session,
         &format!("cd '{}'; '{}'", working_dir.display(), exec_path.display()),
-    )?;
-
-    Ok(())
+    )
 }
 
 fn connect_and_login(config: &Config) -> anyhow::Result<Session> {
@@ -173,17 +169,7 @@ fn connect_and_login(config: &Config) -> anyhow::Result<Session> {
     session.set_tcp_stream(tcp);
     session.handshake()?;
 
-    let passphrase = rpassword::prompt_password(format!(
-        "Please enter the passphrase for private key file `{}`:",
-        config.private_key_file.display()
-    ))
-    .context("Could not read password")?;
-    session.userauth_pubkey_file(
-        &config.username,
-        None,
-        &config.private_key_file,
-        Some(&passphrase),
-    )?;
+    session.userauth_agent(&config.username)?;
 
     info!("Logged in as `{}`", config.username);
 
@@ -196,7 +182,7 @@ fn connect_and_login(config: &Config) -> anyhow::Result<Session> {
 fn execute_command(session: &Session, command: &str) -> anyhow::Result<()> {
     // We'll listen to Ctrl+c (SIGINT) while running a command.
     // So that we can gracefully shut it down.
-    let mut signals = Signals::new(&[SIGINT])?;
+    let mut signals = Signals::new([SIGINT])?;
 
     let mut channel = session.channel_session()?;
     // Will merge stdout and stderr data into stdout.
@@ -249,7 +235,7 @@ fn upload_file(session: &Session, file: &Path, remote_path: &Path) -> anyhow::Re
         remote_path.display()
     );
 
-    let mut remote_file = session.scp_send(&remote_path, 0o644, bytes.len() as u64, None)?;
+    let mut remote_file = session.scp_send(remote_path, 0o644, bytes.len() as u64, None)?;
 
     remote_file.write_all(&bytes)?;
     remote_file.send_eof()?;

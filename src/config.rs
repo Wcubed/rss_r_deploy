@@ -17,7 +17,6 @@ pub struct Config {
     pub target_ip: u32,
     /// Username to log in as on the target.
     pub username: String,
-    pub private_key_file: PathBuf,
 
     /// Local zip file that contains the built `rss_r` executable and `resources` direcory.
     pub rss_r_zip: PathBuf,
@@ -35,7 +34,6 @@ impl Default for Config {
             target_host: String::new(),
             target_ip: 22,
             username: String::new(),
-            private_key_file: PathBuf::new(),
             rss_r_zip: PathBuf::new(),
             rss_r_target_test_dir: PathBuf::new(),
             rss_r_test_config_file: PathBuf::new(),
