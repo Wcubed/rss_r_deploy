@@ -14,9 +14,10 @@ log = "0.4.17"
 simplelog = "0.12.0"
 # Needed for simplelog's time settings.
 time = "0.3.1"
-serde = "1.0"
+serde = "1.0.210"
 ron = "0.8"
-ssh2 = "0.9.1"
-anyhow = "1.0.65"
+ssh2 = "0.9.4"
+color-eyre = "0.6.3"
 rpassword = "7.0.0"
 signal-hook = "0.3.14"
+camino = { version = "1.1.9", features = ["serde1"] }

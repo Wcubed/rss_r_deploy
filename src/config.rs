@@ -1,3 +1,4 @@
+use camino::Utf8PathBuf;
 use log::info;
 use ron::ser::{to_string_pretty, PrettyConfig};
 use serde::{Deserialize, Serialize};
@@ -19,13 +20,18 @@ pub struct Config {
     pub username: String,
 
     /// Local zip file that contains the built `rss_r` executable and `resources` direcory.
-    pub rss_r_zip: PathBuf,
+    pub rss_r_zip: Utf8PathBuf,
     /// Directory on the target that the rss_r script will be deployed to in test mode.
     /// This directory will be emptied upon test deployment.
-    pub rss_r_target_test_dir: PathBuf,
+    pub rss_r_target_test_dir: Utf8PathBuf,
 
     /// File that will become the `app_config.ron` file when rss_r is being tested on target.
-    pub rss_r_test_config_file: PathBuf,
+    pub rss_r_test_config_file: Utf8PathBuf,
+
+    /// This is the directory where the production `rss_r` executable and `static` folder are located.
+    pub rss_r_production_directory: Utf8PathBuf,
+    /// Username / group given to the uploaded files in production. As in with: `chown name:name file`.
+    pub rss_r_production_user: String,
 }
 
 impl Default for Config {
@@ -34,9 +40,11 @@ impl Default for Config {
             target_host: String::new(),
             target_ip: 22,
             username: String::new(),
-            rss_r_zip: PathBuf::new(),
-            rss_r_target_test_dir: PathBuf::new(),
-            rss_r_test_config_file: PathBuf::new(),
+            rss_r_zip: Utf8PathBuf::new(),
+            rss_r_target_test_dir: Utf8PathBuf::new(),
+            rss_r_test_config_file: Utf8PathBuf::new(),
+            rss_r_production_directory: Utf8PathBuf::new(),
+            rss_r_production_user: String::new(),
         }
     }
 }

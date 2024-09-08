@@ -1,8 +1,10 @@
 mod config;
 
 use crate::config::{Config, CONFIG_FILE};
-use anyhow::{bail, Context};
+use camino::{Utf8Path, Utf8PathBuf};
 use clap::Parser;
+use color_eyre::eyre::{eyre, OptionExt};
+use color_eyre::{eyre::WrapErr, Result};
 use log::{error, info, LevelFilter};
 use signal_hook::consts::SIGINT;
 use signal_hook::iterator::Signals;
@@ -11,17 +13,21 @@ use ssh2::{ExtendedData, Session};
 use std::fs::File;
 use std::io::{stdout, Read, Write};
 use std::net::TcpStream;
-use std::path::{Path, PathBuf};
 use std::process::exit;
 
 const REMOTE_TEMP_DIR: &str = "/tmp";
 
 #[derive(Parser, Debug)]
 #[command(author, version, about)]
-struct Args {}
+struct Args {
+    #[arg(short, long)]
+    production: bool,
+}
 
-fn main() {
-    configure_logging();
+fn main() -> Result<()> {
+    color_eyre::install()?;
+
+    configure_logging()?;
 
     let args = Args::parse();
 
@@ -38,7 +44,7 @@ fn main() {
 
             info!("Created {} in the current working directory. Please fill in the desired values, then run this script again.", CONFIG_FILE);
 
-            return;
+            exit(1);
         }
     };
 
@@ -46,11 +52,13 @@ fn main() {
         exit(1);
     }
 
-    let result = deploy_to_test_dir_and_run(&config);
-    if let Err(error) = result {
-        error!("{:#}", error);
-        exit(1);
+    if args.production {
+        deploy_production(&config)?;
+    } else {
+        deploy_to_test_dir(&config)?;
     }
+
+    Ok(())
 }
 
 fn verify_config(config: &Config) -> bool {
@@ -63,66 +71,139 @@ fn verify_config(config: &Config) -> bool {
         return false;
     }
     if !config.rss_r_zip.exists() {
-        error!(
-            "rss_r package zip does not exist: `{}`",
-            config.rss_r_zip.display()
-        );
+        error!("rss_r package zip does not exist: `{}`", config.rss_r_zip);
         return false;
     }
-    if config.rss_r_target_test_dir.to_string_lossy().is_empty() {
+    if config.rss_r_target_test_dir.to_string().is_empty() {
         error!("Please configure a target directory for testing.");
         return false;
     }
     if !config.rss_r_test_config_file.exists() {
         error!(
             "test config file does not exist: `{}`",
-            config.rss_r_test_config_file.display()
+            config.rss_r_test_config_file
         );
+        return false;
+    }
+
+    if config.rss_r_production_directory.to_string().is_empty() {
+        error!("Please configure a target directory for production.");
+        return false;
+    }
+    if config.rss_r_production_user.is_empty() {
+        error!("Please configure a production user.");
         return false;
     }
 
     true
 }
 
-fn deploy_to_test_dir_and_run(config: &Config) -> anyhow::Result<()> {
+fn deploy_production(config: &Config) -> Result<()> {
     let session = connect_and_login(config)?;
 
-    info!("Uploading rss_r to the test directory.");
-    let package_name = config
-        .rss_r_zip
-        .file_name()
-        .context("Cannot upload file, path does not have file name.")?;
-    let mut remote_temp_path = PathBuf::from(REMOTE_TEMP_DIR);
-    remote_temp_path.push(package_name);
+    info!("Stopping rss_r service");
+    execute_command(&session, "sudo systemctl stop rss_r")?;
 
-    upload_file(&session, &config.rss_r_zip, &remote_temp_path)?;
+    let remote_zip_path = upload_zip_to_tmp_dir(config, &session)?;
 
-    info!(
-        "Unpacking package to `{}`",
-        config.rss_r_target_test_dir.display()
-    );
+    info!("Check if zip contains expected files");
+    let rss_r_exec_in_zip = Utf8PathBuf::from("rss_r/rss_r");
+    let static_dir_in_zip = Utf8PathBuf::from("rss_r/static/");
+
     execute_command(
         &session,
-        &format!("rm -rf '{}'", config.rss_r_target_test_dir.display()),
+        &format!(
+            "unzip -l '{}' | grep -q '{}'",
+            remote_zip_path, rss_r_exec_in_zip
+        ),
+    )
+    .with_context(|| format!("Zip does not contain `{}`", rss_r_exec_in_zip))?;
+    execute_command(
+        &session,
+        &format!(
+            "unzip -l '{}' | grep -q '{}'",
+            remote_zip_path, static_dir_in_zip
+        ),
+    )
+    .with_context(|| format!("Zip does not contain `{}`", static_dir_in_zip))?;
+    info!("Expected files found");
+
+    // The old static directory needs removing to make sure there are no old files
+    // left behind. Because the `unzip` command will only add or overwrite files.
+    info!("Removing old static directory");
+    let mut target_static_dir = config.rss_r_production_directory.clone();
+    target_static_dir.push("static");
+    // TODO (2024-09-08): Make this command not fail if the static dir is not there.
+    execute_command(&session, &format!("sudo rm -r '{target_static_dir}'"))?;
+
+    info!("Extracting rss_r exe and static directory");
+    // `-j`: unzip only the files specified, do not create their parent directories.
+    // `-o`: Overwrite files without prompting.
+    execute_command(
+        &session,
+        &format!(
+            "sudo unzip -j -o '{remote_zip_path}' '{rss_r_exec_in_zip}' -d {}",
+            config.rss_r_production_directory
+        ),
+    )?;
+    execute_command(
+        &session,
+        &format!(
+            "sudo unzip -j -o '{remote_zip_path}' '{static_dir_in_zip}*' -d {target_static_dir}",
+        ),
+    )?;
+
+    info!("Setting ownership to {}", config.rss_r_production_user);
+    let mut target_rss_exe = config.rss_r_production_directory.clone();
+    target_rss_exe.push("rss_r");
+    execute_command(
+        &session,
+        &format!(
+            "sudo chown '{}':'{}' '{}'",
+            config.rss_r_production_user, config.rss_r_production_user, target_rss_exe
+        ),
+    )?;
+    execute_command(
+        &session,
+        &format!(
+            "sudo chown -R '{}':'{}' '{}'",
+            config.rss_r_production_user, config.rss_r_production_user, target_static_dir
+        ),
+    )?;
+
+    info!("Starting rss_r service");
+    execute_command(&session, "sudo systemctl start rss_r")?;
+
+    info!("Getting status of service");
+    execute_command(&session, "systemctl status rss_r")?;
+
+    Ok(())
+}
+
+fn deploy_to_test_dir(config: &Config) -> Result<()> {
+    let session = connect_and_login(config)?;
+
+    let remote_zip_path = upload_zip_to_tmp_dir(config, &session)?;
+
+    info!("Unpacking package to `{}`", config.rss_r_target_test_dir);
+    execute_command(
+        &session,
+        &format!("rm -rf '{}'", config.rss_r_target_test_dir),
     )?;
     execute_command(
         &session,
         &format!(
             "unzip '{}' -d '{}'",
-            remote_temp_path.display(),
-            config.rss_r_target_test_dir.display()
+            remote_zip_path, config.rss_r_target_test_dir
         ),
     )?;
 
     info!("Transferring app config file.");
-    let mut config_file_target = PathBuf::from(&config.rss_r_target_test_dir);
+    let mut config_file_target = config.rss_r_target_test_dir.clone();
     config_file_target.push("rss_r");
     config_file_target.push("persistence");
 
-    execute_command(
-        &session,
-        &format!("mkdir -p '{}'", config_file_target.display()),
-    )?;
+    execute_command(&session, &format!("mkdir -p '{}'", config_file_target))?;
 
     config_file_target.push("app_config.ron");
 
@@ -137,28 +218,40 @@ fn deploy_to_test_dir_and_run(config: &Config) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn run_test_rss_r(config: &Config, session: &Session) -> anyhow::Result<()> {
-    let mut exec_path = PathBuf::from(&config.rss_r_target_test_dir);
+/// Returns the path to the uploaded zip.
+fn upload_zip_to_tmp_dir(config: &Config, session: &Session) -> Result<Utf8PathBuf> {
+    info!("Uploading zip to temp directory");
+    let package_name = config
+        .rss_r_zip
+        .file_name()
+        .ok_or_eyre("Cannot upload file, path does not have file name.")?;
+    let mut remote_temp_path = Utf8PathBuf::from(REMOTE_TEMP_DIR);
+    remote_temp_path.push(package_name);
+
+    upload_file(session, &config.rss_r_zip, &remote_temp_path)?;
+
+    Ok(remote_temp_path)
+}
+
+fn run_test_rss_r(config: &Config, session: &Session) -> Result<()> {
+    let mut exec_path = config.rss_r_target_test_dir.clone();
     // Top directory in the .zip should be rss_r.
     exec_path.push("rss_r");
     // Executable is also called rss_r.
     exec_path.push("rss_r");
 
-    let mut working_dir = PathBuf::from(&config.rss_r_target_test_dir);
+    let mut working_dir = config.rss_r_target_test_dir.clone();
     working_dir.push("rss_r");
 
-    info!("Running `{}`", exec_path.display());
+    info!("Running `{}`", exec_path);
     println!("----------");
 
     // Make sure to have the working directory be the same as the rss_r directory,
     // so that the program can locate the persistence and config files properly.
-    execute_command(
-        session,
-        &format!("cd '{}'; '{}'", working_dir.display(), exec_path.display()),
-    )
+    execute_command(session, &format!("cd '{}'; '{}'", working_dir, exec_path))
 }
 
-fn connect_and_login(config: &Config) -> anyhow::Result<Session> {
+fn connect_and_login(config: &Config) -> Result<Session> {
     let target = config.host_and_port();
     info!("Connecting to `{}`", target);
 
@@ -179,7 +272,7 @@ fn connect_and_login(config: &Config) -> anyhow::Result<Session> {
 /// Executes a given command.
 /// Prints the stdout and stderr output as it arrives.
 /// Returns an error if the command had a non-zero exit code.
-fn execute_command(session: &Session, command: &str) -> anyhow::Result<()> {
+fn execute_command(session: &Session, command: &str) -> Result<()> {
     // We'll listen to Ctrl+c (SIGINT) while running a command.
     // So that we can gracefully shut it down.
     let mut signals = Signals::new([SIGINT])?;
@@ -216,26 +309,23 @@ fn execute_command(session: &Session, command: &str) -> anyhow::Result<()> {
     if exit_code == 0 {
         Ok(())
     } else {
-        bail!(
+        Err(eyre!(
             "command `{}` failed with exit code `{}`",
             command,
             exit_code
-        )
+        ))
     }
 }
 
-fn upload_file(session: &Session, file: &Path, remote_path: &Path) -> anyhow::Result<()> {
+fn upload_file(session: &Session, file: &Utf8Path, remote_path: &Utf8Path) -> Result<()> {
     let mut local_file = File::open(file)?;
     let mut bytes = Vec::new();
     local_file.read_to_end(&mut bytes)?;
 
-    info!(
-        "Uploading `{}` to `{}`",
-        file.display(),
-        remote_path.display()
-    );
+    info!("Uploading `{}` to `{}`", file, remote_path);
 
-    let mut remote_file = session.scp_send(remote_path, 0o644, bytes.len() as u64, None)?;
+    let mut remote_file =
+        session.scp_send(remote_path.as_std_path(), 0o644, bytes.len() as u64, None)?;
 
     remote_file.write_all(&bytes)?;
     remote_file.send_eof()?;
@@ -246,7 +336,7 @@ fn upload_file(session: &Session, file: &Path, remote_path: &Path) -> anyhow::Re
     Ok(())
 }
 
-fn configure_logging() {
+fn configure_logging() -> Result<()> {
     // The logged time is by default in UTC.
     let config = ConfigBuilder::default()
         .set_time_format_custom(format_description!(
@@ -263,5 +353,5 @@ fn configure_logging() {
         TerminalMode::Mixed,
         ColorChoice::Auto,
     )
-    .expect("Could not start logger.");
+    .context("Could not start logger")
 }
